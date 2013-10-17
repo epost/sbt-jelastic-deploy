@@ -18,11 +18,11 @@ object JelasticClient {
 
   val Scheme = "https"
   val ApiVersion = "1.0"
-  val AuthenticationPath = "%s/users/authentication/rest/signin".format(ApiVersion)
-  val UploaderPath = "%s/storage/uploader/rest/upload".format(ApiVersion)
-  val CreatePath = "deploy/createObject"
-  val DeployPath = "deploy/DeployArchive"
-  val LogoutPath = "users/authentication/rest/signout"
+//  val AuthenticationPath = "%s/users/authentication/rest/signin".format(ApiVersion)
+//  val UploaderPath = "%s/storage/uploader/rest/upload".format(ApiVersion)
+//  val CreatePath = "deploy/createObject"
+//  val DeployPath = "deploy/DeployArchive"
+//  val LogoutPath = "users/authentication/rest/signout"
 
   val mapper = new ObjectMapper
   mapper.registerModule(DefaultScalaModule)
@@ -37,8 +37,6 @@ object JelasticClient {
     })
 
   object read {
-
-
     private def response[M: Manifest] = as.Response(r => deserialize[M](r.getResponseBodyAsStream))
 
     val Authentication = response[JelasticResponse.Authentication]
@@ -46,9 +44,7 @@ object JelasticClient {
     val Uploader = response[JelasticResponse.Uploader]
     val Deploy = response[JelasticResponse.Deploy]
     val Logout = response[JelasticResponse.Logout]
-
   }
-
 }
 
 class JelasticClient(apiHoster: String = "j.layershift.co.uk", port: Int = 443, headers: Map[String, String] = Map.empty, logger: Logger) {
@@ -62,26 +58,29 @@ class JelasticClient(apiHoster: String = "j.layershift.co.uk", port: Int = 443, 
   def await[T](f: Future[T]) = Await.result(f, Duration.Inf)
 
   private implicit def headerVerb(req: Req) = new {
-    def <:<(headers: Map[String, String]) = {
-      headers foreach {
-        case (name, value) => req.underlying { rb => rb.addHeader(name, value); rb }
-      }
-      req
-    }
 
     def <<<(params: Map[String, Any]) = {
-      req.setMethod("POST")
-      req.setHeader("Content-Type", "multipart/form-data")
+      var req2 = req.setMethod("POST")
+        .setHeader("Content-Type", "multipart/form-data")
+
       val parts = params collect {
         case (key, s: String) => new StringPart(key, s)
         case (key, f: File) => new FilePart(key, f)
       }
-      parts foreach req.addBodyPart
-      req
+      parts foreach { part => req2 = req2.addBodyPart(part) }
+      req2
     }
 
     def withCookies = {
-      req.underlying { rb => cookies.foreach(cookie => rb.addCookie(cookie)); rb }
+      var req2: Req = req
+      cookies foreach { cookie =>
+        req2 = req2.addOrReplaceCookie(cookie)
+        logger.debug("withCookies: " + cookie)
+        logger.debug("withCookies: req2 = " + req2.toRequest.toString
+        )
+      }
+     logger.debug("req2 cookies: " + req2.toRequestBuilder.build.getCookies)
+     req2
     }
   }
 
@@ -110,7 +109,8 @@ class JelasticClient(apiHoster: String = "j.layershift.co.uk", port: Int = 443, 
 
 
   def authenticate(login: String, password: String): JelasticResponse.Authentication = {
-    val req = reqBase / AuthenticationPath
+//    val req = reqBase / AuthenticationPath
+    val req = reqBase / ApiVersion / "users" / "authentication" / "rest" / "signin"
     logger.debug("Making authentication request to: " + req.toRequest.toString)
     logger.debug("login: " + login)
     logger.debug("password: " + password)
@@ -118,14 +118,18 @@ class JelasticClient(apiHoster: String = "j.layershift.co.uk", port: Int = 443, 
   }
 
   def upload(auth: JelasticResponse.Authentication, file: File): JelasticResponse.Uploader = {
-    val req = reqBase / UploaderPath
+//    val req = reqBase / UploaderPath
+    val req = reqBase / ApiVersion / "storage" / "uploader" / "rest" / "upload"
+
     logger.debug("Making upload request to: " + req.toRequest.toString)
     logger.debug("file: " + file.getAbsolutePath)
-    val pcfg = new PerRequestConfig()
-    pcfg.setRequestTimeoutInMs(300000)
-    req.underlying { _.setPerRequestConfig(pcfg) }
+
     val uploader = new AsyncCompletionHandler[JelasticResponse.Uploader] {
-      def onCompleted(response: Response): JelasticResponse.Uploader = (keepCookies andThen read.Uploader)(response)
+
+      def onCompleted(response: Response): JelasticResponse.Uploader = {
+        logger.debug("response: " + response.getResponseBody.toString)
+        (keepCookies andThen read.Uploader)(response)
+      }
 
       private var numSt = 0L
 
@@ -139,7 +143,10 @@ class JelasticClient(apiHoster: String = "j.layershift.co.uk", port: Int = 443, 
       }
     }
 
-    await(Http(req.withCookies <<< Map("fid" -> "123456", "session" -> auth.session, "file" -> file) > uploader))
+//await(Http(req.withCookies <<< Map("fid" -> "123456", "session" -> auth.session, "file" -> file) > uploader))
+    val http = Http.configure(_.setConnectionTimeoutInMs(30000))
+    await(http(req.withCookies <<< Map("fid" -> "123456", "session" -> auth.session, "file" -> file) > uploader))
+
   }
 
   def createObject(name: String, comment: String, uploader: JelasticResponse.Uploader, auth: JelasticResponse.Authentication): JelasticResponse.Create = {
@@ -151,9 +158,13 @@ class JelasticClient(apiHoster: String = "j.layershift.co.uk", port: Int = 443, 
       "type" -> "JDeploy",
       "data" -> data)
 
-    logger.debug("Making create request to: " + (reqBase / CreatePath).toRequest.toString)
+    val req = reqBase.withCookies / "deploy" / "createObject"
+    logger.debug("Making create request to: " + req.toRequest.toString)
     logger.debug("params: %s" format params)
-    await(Http(reqBase.withCookies / CreatePath << params OK (keepCookies andThen read.Create)))
+
+// body = {"response":{"id":686,"result":0,"object":{"id":686,"developer":475,"uploadDate":1380652380419}},"result":0,"debug":{"time":1308,"cpu":{"time":980,"usage":"2"}}}
+    await(Http(req << params OK (dumpBody andThen keepCookies andThen read.Create)))
+
   }
 
   def deploy(environment: String, context: String, create: JelasticResponse.Create, uploader: JelasticResponse.Uploader, auth: JelasticResponse.Authentication): JelasticResponse.Deploy = {
@@ -165,15 +176,23 @@ class JelasticClient(apiHoster: String = "j.layershift.co.uk", port: Int = 443, 
       "newContext" -> context,
       "domain" -> environment
     )
-    logger.debug("Making deploy request to: " + (reqBase / DeployPath).toRequest.toString)
+
+    val req = reqBase.withCookies / "deploy" / "deployArchive"
+    logger.debug("Making deploy request to: " + req.toRequest.toString)
     logger.debug("params: %s" format params)
-    await(Http(reqBase.withCookies / DeployPath << params OK (keepCookies andThen read.Deploy)))
+    await(Http(req << params OK (keepCookies andThen read.Deploy)))
   }
 
   def logout(auth: JelasticResponse.Authentication): JelasticResponse.Logout = {
     val params = Map("charset" -> "UTF-8", "session" -> auth.session)
-    logger.debug("Making logout request to: " + (reqBase / LogoutPath).toRequest.toString)
+    val req = reqBase.withCookies / "users" / "authentication" / "rest" / "signout"
+    logger.debug("Making logout request to: " + req.toRequest.toString)
     logger.debug("params: %s" format params)
-    await(Http(reqBase.withCookies / LogoutPath <<? params OK (clearCookies andThen read.Logout)))
+    await(Http(req<<? params OK (clearCookies andThen read.Logout)))
+  }
+
+  val dumpBody = (response: Response) => {
+    logger.debug("body = " + response.getResponseBody)
+    response
   }
 }

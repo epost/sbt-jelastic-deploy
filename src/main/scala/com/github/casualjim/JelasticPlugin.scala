@@ -97,6 +97,10 @@ object JelasticPlugin extends sbt.Plugin {
             s.log.info("Upload of %s with size %s succeeded.".format(uploader.file, uploader.size))
             val create = client.createObject(file.getName, cmt, uploader, auth)
             if (create.result == 0) {
+              s.log.debug("create = " + create.toString)
+              s.log.debug("create.response = " + create.response.toString)
+              s.log.debug("create.response.obj = " + create.response.obj.toString)
+              s.log.debug("create.response.obj.developer = " + create.response.obj.developer.toString)
               s.log.info("File registration for developer " + create.response.obj.developer + " success")
               val logout = client.logout(auth)
               if (logout.result == 0) {
@@ -108,6 +112,7 @@ object JelasticPlugin extends sbt.Plugin {
             }
           } else {
             s.log.error("Jelastic upload of " + file.getAbsolutePath + " failed: " + uploader.error)
+            s.log.debug("uploader = " + uploader.toString)
             throw new RuntimeException(uploader.error)
           }
         } else {
